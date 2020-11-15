@@ -246,6 +246,14 @@ def _format_set_volume(zone: int, volume: int) -> str:
        return 'Z{}VOL{:0=2}'.format(int(zone),int(volume))
     else:
        return None
+      
+def _format_set_volume_up(zone: int) -> str:
+    #CMD *ZzVOL+  where "z" is the Zone number
+    return 'Z{}VOL+'.format(int(zone))
+
+def _format_set_volume_down(zone: int) -> str:
+    #CMD *ZzVOL-   where "z" is the Zone number
+    return 'Z{}VOL-'.format(int(zone))
 
 def _format_set_treble(zone: int, treble: int) -> bytes:
     treble = int(max(12, min(treble, -12)))
@@ -396,6 +404,16 @@ def get_nuvo(port_url):
         @synchronized
         def set_volume(self, zone: int, volume: int):
             self._process_request(_format_set_volume(zone, volume))
+            
+        @synchronized
+        def set_volume_up(self, zone: int):
+            # increase the volume by 1
+            self._process_request(_format_set_volume_up(zone))
+
+        @synchronized
+        def set_volume_down(self, zone: int):
+            # decrease the volume by 1
+            self._process_request(_format_set_volume_down(zone))
 
         @synchronized
         def set_treble(self, zone: int, treble: float):
