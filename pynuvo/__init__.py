@@ -420,3 +420,124 @@ def get_nuvo(port_url):
 
     return NuvoSync(port_url)
   
+
+@asyncio.coroutine
+def get_async_nuvo(port_url, loop):
+    """
+    Return asynchronous version of Nuvo interface
+    :param port_url: serial port, i.e. '/dev/ttyUSB0'
+    :return: asynchronous implementation of Nuvo interface
+    """
+
+    lock = asyncio.Lock()
+
+    def locked_coro(coro):
+        @asyncio.coroutine
+        @wraps(coro)
+        def wrapper(*args, **kwargs):
+            with (yield from lock):
+                return (yield from coro(*args, **kwargs))
+        return wrapper
+
+    class NuvoAsync(Nuvo):
+        def __init__(self, nuvo_protocol):
+            self._protocol = nuvo_protocol
+
+        @locked_coro
+        @asyncio.coroutine
+        def zone_status(self, zone: int):
+            string = yield from self._protocol.send(_format_zone_status_request(zone))
+            return ZoneStatus.from_string(string)
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_power(self, zone: int, power: bool):
+            yield from self._protocol.send(_format_set_power(zone, power))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_mute(self, zone: int, mute: bool):
+            yield from self._protocol.send(_format_set_mute(zone, mute))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_volume(self, zone: int, volume: int):
+            yield from self._protocol.send(_format_set_volume(zone, volume))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_volume_up(self, zone: int):
+            yield from self._protocol.send(_format_set_volume_up(zone))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_volume_down(self, zone: int):
+            yield from self._protocol.send(_format_set_volume_down(zone))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_treble(self, zone: int, treble: float):
+            yield from self._protocol.send(_format_set_treble(zone, treble))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_bass(self, zone: int, bass: float):
+            yield from self._protocol.send(_format_set_bass(zone, bass))
+
+        @locked_coro
+        @asyncio.coroutine
+        def set_source(self, zone: int, source: int):
+            yield from self._protocol.send(_format_set_source(zone, source))
+
+        @locked_coro
+        @asyncio.coroutine
+        def restore_zone(self, status: ZoneStatus):
+            yield from self._protocol.send(_format_set_power(status.zone, status.power))
+            yield from self._protocol.send(_format_set_mute(status.zone, status.mute))
+            yield from self._protocol.send(_format_set_volume(status.zone, status.volume))
+            yield from self._protocol.send(_format_set_source(status.zone, status.source))
+            yield from self._protocol.send(_format_set_treble(status.zone, status.treble))
+            yield from self._protocol.send(_format_set_bass(status.zone, status.bass))
+
+    class NuvoProtocol(asyncio.Protocol):
+        def __init__(self, loop):
+            super().__init__()
+            self._loop = loop
+            self._lock = asyncio.Lock()
+            self._transport = None
+            self._connected = asyncio.Event(loop=loop)
+            self.q = asyncio.Queue(loop=loop)
+
+        def connection_made(self, transport):
+            self._transport = transport
+            self._connected.set()
+            _LOGGER.debug('port opened %s', self._transport)
+
+        def data_received(self, data):
+            asyncio.ensure_future(self.q.put(data), loop=self._loop)
+
+        @asyncio.coroutine
+        def send(self, request: bytes, skip=0):
+            yield from self._connected.wait()
+            result = bytearray()
+            # Only one transaction at a time
+            with (yield from self._lock):
+                self._transport.serial.reset_output_buffer()
+                self._transport.serial.reset_input_buffer()
+                while not self.q.empty():
+                    self.q.get_nowait()
+                self._transport.write(request)
+                try:
+                    while True:
+                        result += yield from asyncio.wait_for(self.q.get(), TIMEOUT_OP, loop=self._loop)
+                        if len(result) > skip and result[-LEN_EOL:] == EOL:
+                            ret = bytes(result)
+                            _LOGGER.debug('Received "%s"', ret)
+                            return ret.decode('ascii')
+                except asyncio.TimeoutError:
+                    _LOGGER.error("Timeout during receiving response for command '%s', received='%s'", request, result)
+                    raise
+
+    _, protocol = yield from create_serial_connection(loop, functools.partial(NuvoProtocol, loop),
+                                                      port_url, baudrate=57600)
+    return NuvoAsync(protocol)
